@@ -510,6 +510,29 @@ HTTP middleware allows easy integration into existing web services without invas
 
 Used Lua scripts for atomic Redis operations, ensuring consistency in distributed environments.
 
+### 6. External Dependencies
+
+**Minimal Dependencies Philosophy**: Core rate limiting algorithms use only Go's standard library for maximum portability and minimal attack surface.
+
+**External Libraries Used**:
+
+1. **`github.com/redis/go-redis/v9`** (Production)
+   - **Purpose**: Official Redis client for Go
+   - **Why**: Most mature and well-maintained Redis client, supports both single instance and cluster modes
+   - **Usage**: Distributed rate limiting across multiple instances
+   - **Alternatives considered**: go-redis/redis (v8) - chose v9 for better performance and features
+
+2. **`github.com/alicebob/miniredis/v2`** (Testing only)
+   - **Purpose**: Pure Go in-memory Redis mock
+   - **Why**: Enables Redis functionality testing without requiring actual Redis infrastructure
+   - **Usage**: Unit tests for Redis-based rate limiter
+   - **Alternatives considered**: Real Redis in CI - chose miniredis for faster tests and no external dependencies
+
+**Design Trade-offs**:
+- Chose official libraries over custom implementations for Redis protocol (reliability over control)
+- Used established testing libraries to ensure test reliability
+- All core algorithms remain dependency-free for easy auditing and portability
+
 ## Assumptions & Limitations
 
 ### Assumptions
