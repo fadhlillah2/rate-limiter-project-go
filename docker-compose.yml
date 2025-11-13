@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # Redis service for distributed rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: rate-limiter-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - rate-limiter-network
+
+  # Rate limiter service
+  rate-limiter:
+    build: .
+    container_name: rate-limiter-server
+    ports:
+      - "8080:8080"
+    environment:
+      - LOG_LEVEL=info
+    command:
+      - "-port"
+      - "8080"
+      - "-redis"
+      - "redis:6379"
+      - "-algorithm"
+      - "fixed_window"
+      - "-limit"
+      - "100"
+      - "-window"
+      - "1m"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - rate-limiter-network
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  rate-limiter-network:
+    driver: bridge
