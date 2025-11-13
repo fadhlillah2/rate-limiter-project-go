@@ -581,7 +581,7 @@ MIT License - see LICENSE file for details
 
 ## Contact
 
-For questions or support, contact: andika@doitpay.co
+For questions or support, contact: fadhlillah949699@gmail.com
 
 ## Acknowledgments
 
