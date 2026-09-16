@@ -476,7 +476,7 @@ Statement coverage: `pkg/ratelimiter` **86.1%**, `pkg/middleware` **74.4%**, who
 
 Redis checks use miniredis, not a deployed Redis cluster. This verifies the tested behavior, not production performance or complete correctness. Known source-level limitations remain: `RedisConfig.KeyPrefix` is not applied, and `Reset` uses a prefix scan that can also match sibling keys. Redis sliding-window `ResetAt` retains its existing `now + window` behavior. These limitations were inspected in source, not independently reproduced by this run.
 
-The local `.github/workflows/ci.yml` runs the same checks on pushes and pull requests. It has not yet been pushed or executed on GitHub; no remote CI success is claimed.
+`.github/workflows/ci.yml` runs the same checks on pushes and pull requests. On 17 September 2026 (WIB), [GitHub Actions run 35127882994](https://github.com/fadhlillah2/rate-limiter-project-go/actions/runs/35127882994) passed on published commit `cb4bced819d2b1ece7c7662a908844586acf6fc1`, including dependency verification, tests, race checks, coverage and the HTTP demonstration. Its coverage figures match the dated local results above.
 
 ### Unit Tests
 
