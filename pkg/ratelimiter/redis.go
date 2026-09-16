@@ -3,6 +3,7 @@ package ratelimiter
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 type RedisLimiter struct {
 	client       redis.UniversalClient
 	config       *Config
+	keyPrefix    string
 	customLimits sync.Map // map[string]*Limit
 }
 
@@ -32,7 +34,8 @@ type RedisConfig struct {
 	// PoolSize is the maximum number of socket connections
 	PoolSize int
 
-	// KeyPrefix is prepended to all keys
+	// KeyPrefix identifies a Redis namespace (default: "ratelimit:").
+	// It is encoded in physical keys, not prepended literally.
 	KeyPrefix string
 }
 
@@ -80,9 +83,14 @@ func NewRedisLimiter(redisConfig *RedisConfig, config *Config) (*RedisLimiter, e
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
+	keyPrefix := redisConfig.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "ratelimit:"
+	}
 	return &RedisLimiter{
-		client: client,
-		config: config,
+		client:    client,
+		config:    config,
+		keyPrefix: keyPrefix,
 	}, nil
 }
 
@@ -116,7 +124,7 @@ func (r *RedisLimiter) allowNWithInfo(ctx context.Context, key string, n int) (*
 		return nil, fmt.Errorf("no limit configured for key: %s", key)
 	}
 
-	redisKey := r.buildKey(key)
+	redisKey := r.buildKey(key) + "sliding"
 	now := time.Now()
 	// Redis timestamps and TTLs have millisecond resolution; round up positive fractions.
 	windowSizeMs := limit.WindowSize.Milliseconds()
@@ -211,7 +219,7 @@ func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*R
 		windowSizeMs++
 	}
 	// Use current window timestamp as key suffix
-	windowKey := fmt.Sprintf("%s:%d", redisKey, now.UnixMilli()/windowSizeMs)
+	windowKey := fmt.Sprintf("%sfixed:%d", redisKey, now.UnixMilli()/windowSizeMs)
 
 	script := redis.NewScript(`
 		local key = KEYS[1]
@@ -281,7 +289,7 @@ func redisMillisecondsDuration(milliseconds int64) time.Duration {
 func (r *RedisLimiter) Reset(ctx context.Context, key string) error {
 	redisKey := r.buildKey(key)
 
-	// Delete all keys matching the pattern
+	// Encoded components and the trailing delimiter make this an exact logical namespace.
 	iter := r.client.Scan(ctx, 0, redisKey+"*", 0).Iterator()
 	for iter.Next(ctx) {
 		if err := r.client.Del(ctx, iter.Val()).Err(); err != nil {
@@ -316,9 +324,10 @@ func (r *RedisLimiter) SetLimit(key string, limit *Limit) error {
 	return nil
 }
 
-// buildKey constructs the Redis key with optional prefix
+// buildKey returns a glob-safe, unambiguous namespace for one logical key.
+// The root is disjoint from legacy "ratelimit:" keys, which expire naturally.
 func (r *RedisLimiter) buildKey(key string) string {
-	return fmt.Sprintf("ratelimit:%s", key)
+	return "ratelimit-v2:" + hex.EncodeToString([]byte(r.keyPrefix)) + ":" + hex.EncodeToString([]byte(key)) + ":"
 }
 
 // Close cleans up resources

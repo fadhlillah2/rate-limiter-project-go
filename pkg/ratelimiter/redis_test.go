@@ -240,7 +240,7 @@ func TestRedisLimiter_SubsecondWindow(t *testing.T) {
 	if allowed, err := limiter.Allow(ctx, "fractional"); err != nil || !allowed {
 		t.Fatalf("First request = %v, %v; want allowed", allowed, err)
 	}
-	if ttl := mr.TTL("ratelimit:fractional"); ttl != window {
+	if ttl := mr.TTL("ratelimit-v2:726174656c696d69743a:6672616374696f6e616c:sliding"); ttl != window {
 		t.Fatalf("TTL = %v; want %v", ttl, window)
 	}
 	result, err := limiter.AllowWithInfo(ctx, "fractional")
@@ -267,7 +267,7 @@ func TestRedisLimiter_SubmillisecondWindow(t *testing.T) {
 	if allowed, err := limiter.Allow(context.Background(), "tiny"); err != nil || !allowed {
 		t.Fatalf("First request = %v, %v; want allowed", allowed, err)
 	}
-	if ttl := mr.TTL("ratelimit:tiny"); ttl != time.Millisecond {
+	if ttl := mr.TTL("ratelimit-v2:726174656c696d69743a:74696e79:sliding"); ttl != time.Millisecond {
 		t.Fatalf("TTL = %v; want minimum Redis resolution 1ms", ttl)
 	}
 }
@@ -685,7 +685,7 @@ func TestRedisLimiter_BuildKey(t *testing.T) {
 	defer limiter.Close()
 
 	key := limiter.buildKey("test")
-	expected := "ratelimit:test"
+	expected := "ratelimit-v2:726174656c696d69743a:74657374:"
 	if key != expected {
 		t.Errorf("Expected key '%s', got '%s'", expected, key)
 	}

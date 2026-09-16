@@ -351,6 +351,22 @@ if err != nil {
 defer limiter.Close()
 ```
 
+**Redis key isolation and upgrade:** `RedisConfig.KeyPrefix` is a logical namespace;
+an empty value and the explicit value `ratelimit:` select the same default namespace.
+Physical keys use `ratelimit-v2:<hex(namespace)>:<hex(logical-key)>:sliding`
+or the same stem followed by `fixed:<window-index>`. Encoding separates arbitrary
+prefixes and logical keys, including colons and Redis glob characters. `Reset`
+clears both algorithms only within that exact logical namespace.
+
+This changes the Redis storage format: existing `ratelimit:` counters are not read,
+modified, or migrated. Existing expiring counters expire naturally; new counters
+start with fresh quota. Coordinate the upgrade across all instances: mixed old/new
+versions maintain independent quotas and must not be used as one shared limiter.
+If the existing allowance must remain enforced through cutover, stop old-version
+traffic and wait for its counters' TTLs before accepting traffic with new counters.
+The public Go API is unchanged; tools reading physical Redis keys must adopt the
+new format. No live Redis migration is performed by this repository change.
+
 **Benefits:**
 - Shared rate limits across multiple instances
 - Atomic operations via Lua scripts
@@ -474,9 +490,26 @@ go test -count=1 -timeout=30s -v -run '^TestIntegration_RateLimitEnforcement$' .
 
 Statement coverage: `pkg/ratelimiter` **86.1%**, `pkg/middleware` **74.4%**, whole profile **51.2%**. The server and example executables compile but have **0%** coverage. Integration tests report no statements of their own. The HTTP demonstration logged five responses of 200, then 429 with `Retry-After: 1`.
 
-Redis checks use miniredis, not a deployed Redis cluster. This verifies the tested behavior, not production performance or complete correctness. Known source-level limitations remain: `RedisConfig.KeyPrefix` is not applied, and `Reset` uses a prefix scan that can also match sibling keys. Redis sliding-window `ResetAt` retains its existing `now + window` behavior. These limitations were inspected in source, not independently reproduced by this run.
+Redis checks use miniredis, not a deployed Redis cluster. This verifies the tested behavior, not production performance or complete correctness. At that verification, `RedisConfig.KeyPrefix` was not applied and `Reset` could also match sibling keys; the subsequent namespace-isolation change above addresses these issues with regression tests. Redis sliding-window `ResetAt` retains its existing `now + window` behavior and is outside that change's scope.
 
 `.github/workflows/ci.yml` runs the same checks on pushes and pull requests. On 17 September 2026 (WIB), [GitHub Actions run 35127882994](https://github.com/fadhlillah2/rate-limiter-project-go/actions/runs/35127882994) passed on published commit `cb4bced819d2b1ece7c7662a908844586acf6fc1`, including dependency verification, tests, race checks, coverage and the HTTP demonstration. Its coverage figures match the dated local results above.
+
+### Namespace-isolation verification — 17 September 2026 (WIB)
+
+Local tests of commit `326778b7ff5b8c96a1801047115b149a205668ac` plus the
+namespace-isolation patch passed with Go 1.24.7, Linux amd64, and cached locked
+dependencies (`GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOPROXY=off`). An isolated
+source copy passed `go test -count=1 -timeout=120s ./...`, the same command with
+`-race`, and the same command with `-coverprofile=coverage.out`; `go tool cover
+-func=coverage.out` reported **51.4%** overall. Package coverage was **86.2%** for
+`pkg/ratelimiter` and **74.4%** for `pkg/middleware`; server/examples remained **0%**.
+
+The miniredis regressions failed against the preceding implementation and passed
+with the patch: separate configured namespaces, exact reset for sibling/glob keys,
+numeric-suffix separation across algorithms, and untouched legacy keys. These are
+local working-tree results, not a remote CI run of this patch. They do not verify
+a deployed Redis cluster, throughput, or production migration. The published CI
+link above remains evidence for its original commit only.
 
 ### Unit Tests
 
