@@ -88,6 +88,7 @@ func TestIntegration_RateLimitEnforcement(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Request %d: expected status 200, got %d", i+1, resp.StatusCode)
 		}
+		t.Logf("Request %d: HTTP %d", i+1, resp.StatusCode)
 	}
 
 	// 6th request should be rate limited
@@ -106,6 +107,7 @@ func TestIntegration_RateLimitEnforcement(t *testing.T) {
 	if retryAfter == "" {
 		t.Error("Retry-After header should be set when rate limited")
 	}
+	t.Logf("Request 6: HTTP %d, Retry-After=%s", resp.StatusCode, retryAfter)
 }
 
 func TestIntegration_RateLimitReset(t *testing.T) {

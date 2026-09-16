@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	fmt.Println("=== Rate Limiter Basic Usage Examples ===\n")
+	fmt.Print("=== Rate Limiter Basic Usage Examples ===\n\n")
 
 	// Example 1: Fixed Window Rate Limiter
 	example1FixedWindow()
@@ -65,7 +65,7 @@ func example1FixedWindow() {
 	// Try again
 	allowed, _ := limiter.Allow(ctx, key)
 	if allowed {
-		fmt.Println("Request after reset: ✓ Allowed\n")
+		fmt.Print("Request after reset: ✓ Allowed\n\n")
 	}
 }
 
@@ -135,7 +135,7 @@ func example3TokenBucket() {
 	// Should have ~5 tokens now
 	allowed, _ := limiter.Allow(ctx, key)
 	if allowed {
-		fmt.Println("After refill: ✓ Allowed\n")
+		fmt.Print("After refill: ✓ Allowed\n\n")
 	}
 }
 
@@ -227,8 +227,8 @@ func example5Concurrent() {
 	fmt.Printf("Expected: 10 allowed, 10 denied\n")
 
 	if allowedCount == 10 && deniedCount == 10 {
-		fmt.Println("✓ Thread-safe concurrent handling verified!\n")
+		fmt.Print("✓ Thread-safe concurrent handling verified!\n\n")
 	} else {
-		fmt.Println("✗ Unexpected result\n")
+		fmt.Print("✗ Unexpected result\n\n")
 	}
 }

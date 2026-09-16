@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -80,7 +81,7 @@ func (m *RateLimitMiddleware) Handler(next http.Handler) http.Handler {
 			}
 
 			if !result.Allowed {
-				retryAfter := fmt.Sprintf("%.0f", result.RetryAfter.Seconds())
+				retryAfter := fmt.Sprintf("%.0f", math.Ceil(result.RetryAfter.Seconds()))
 				if retryAfter == "0" {
 					retryAfter = "1"
 				}

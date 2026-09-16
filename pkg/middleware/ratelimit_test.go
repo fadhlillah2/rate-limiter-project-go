@@ -62,11 +62,11 @@ func TestRateLimitMiddleware_Allow(t *testing.T) {
 
 func TestRateLimitMiddleware_IPKeyExtractor(t *testing.T) {
 	tests := []struct {
-		name           string
-		remoteAddr     string
-		xForwardedFor  string
-		xRealIP        string
-		expectedKey    string
+		name          string
+		remoteAddr    string
+		xForwardedFor string
+		xRealIP       string
+		expectedKey   string
 	}{
 		{
 			name:        "Remote addr without X headers",
@@ -74,10 +74,10 @@ func TestRateLimitMiddleware_IPKeyExtractor(t *testing.T) {
 			expectedKey: "192.168.1.1",
 		},
 		{
-			name:           "X-Forwarded-For takes precedence",
-			remoteAddr:     "192.168.1.1:12345",
-			xForwardedFor:  "10.0.0.1, 10.0.0.2",
-			expectedKey:    "10.0.0.1",
+			name:          "X-Forwarded-For takes precedence",
+			remoteAddr:    "192.168.1.1:12345",
+			xForwardedFor: "10.0.0.1, 10.0.0.2",
+			expectedKey:   "10.0.0.1",
 		},
 		{
 			name:        "X-Real-IP when no X-Forwarded-For",
@@ -86,11 +86,11 @@ func TestRateLimitMiddleware_IPKeyExtractor(t *testing.T) {
 			expectedKey: "10.0.0.1",
 		},
 		{
-			name:           "X-Forwarded-For over X-Real-IP",
-			remoteAddr:     "192.168.1.1:12345",
-			xForwardedFor:  "10.0.0.1",
-			xRealIP:        "10.0.0.2",
-			expectedKey:    "10.0.0.1",
+			name:          "X-Forwarded-For over X-Real-IP",
+			remoteAddr:    "192.168.1.1:12345",
+			xForwardedFor: "10.0.0.1",
+			xRealIP:       "10.0.0.2",
+			expectedKey:   "10.0.0.1",
 		},
 	}
 
@@ -309,5 +309,31 @@ func TestDefaultOnLimit(t *testing.T) {
 	contentType := w.Header().Get("Content-Type")
 	if contentType != "application/json" {
 		t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+	}
+}
+
+type deniedLimiter struct {
+	ratelimiter.RateLimiter
+	retryAfter time.Duration
+}
+
+func (l deniedLimiter) AllowWithInfo(context.Context, string) (*ratelimiter.Result, error) {
+	return &ratelimiter.Result{Allowed: false, RetryAfter: l.retryAfter}, nil
+}
+
+func TestRateLimitMiddleware_RetryAfterRoundsUp(t *testing.T) {
+	for _, tc := range []struct {
+		delay time.Duration
+		want  string
+	}{{0, "1"}, {100 * time.Millisecond, "1"}, {time.Second, "1"}, {1400 * time.Millisecond, "2"}, {2 * time.Second, "2"}} {
+		t.Run(tc.delay.String(), func(t *testing.T) {
+			handler := New(&Config{Limiter: deniedLimiter{retryAfter: tc.delay}}).Handler(
+				http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("Denied request reached handler") }))
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+			if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != tc.want {
+				t.Fatalf("status=%d Retry-After=%q; want 429, %q", w.Code, w.Header().Get("Retry-After"), tc.want)
+			}
+		})
 	}
 }

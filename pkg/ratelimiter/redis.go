@@ -2,6 +2,7 @@ package ratelimiter
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"time"
@@ -96,7 +97,7 @@ func (r *RedisLimiter) AllowN(ctx context.Context, key string, n int) (bool, err
 		return false, fmt.Errorf("n must be positive, got %d", n)
 	}
 
-	result, err := r.AllowWithInfo(ctx, key)
+	result, err := r.allowNWithInfo(ctx, key, n)
 	if err != nil {
 		return false, err
 	}
@@ -106,6 +107,10 @@ func (r *RedisLimiter) AllowN(ctx context.Context, key string, n int) (bool, err
 
 // AllowWithInfo checks if a request should be allowed using sliding window algorithm
 func (r *RedisLimiter) AllowWithInfo(ctx context.Context, key string) (*Result, error) {
+	return r.allowNWithInfo(ctx, key, 1)
+}
+
+func (r *RedisLimiter) allowNWithInfo(ctx context.Context, key string, n int) (*Result, error) {
 	limit := r.GetLimit(key)
 	if limit == nil {
 		return nil, fmt.Errorf("no limit configured for key: %s", key)
@@ -113,49 +118,22 @@ func (r *RedisLimiter) AllowWithInfo(ctx context.Context, key string) (*Result, 
 
 	redisKey := r.buildKey(key)
 	now := time.Now()
-	windowStart := now.Add(-limit.WindowSize)
-
-	// Use Lua script for atomic operations
-	script := redis.NewScript(`
-		local key = KEYS[1]
-		local now = tonumber(ARGV[1])
-		local window_start = tonumber(ARGV[2])
-		local limit = tonumber(ARGV[3])
-		local window_size = tonumber(ARGV[4])
-
-		-- Remove old entries outside the window
-		redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
-
-		-- Count current entries
-		local current = redis.call('ZCARD', key)
-
-		-- Check if limit exceeded
-		if current >= limit then
-			local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-			local retry_after = 0
-			if #oldest > 0 then
-				retry_after = tonumber(oldest[2]) + window_size - now
-				if retry_after < 0 then retry_after = 0 end
-			end
-			return {0, current, limit, retry_after}
-		end
-
-		-- Add new entry
-		redis.call('ZADD', key, now, now .. ':' .. math.random())
-		redis.call('EXPIRE', key, math.ceil(window_size))
-
-		return {1, current + 1, limit, 0}
-	`)
-
+	// Redis timestamps and TTLs have millisecond resolution; round up positive fractions.
 	windowSizeMs := limit.WindowSize.Milliseconds()
-	nowMs := now.UnixMilli()
-	windowStartMs := windowStart.UnixMilli()
+	if limit.WindowSize%time.Millisecond != 0 {
+		windowSizeMs++
+	}
 
-	result, err := script.Run(ctx, r.client, []string{redisKey},
+	nowMs := now.UnixMilli()
+	windowStartMs := nowMs - windowSizeMs
+
+	result, err := redisSlidingWindowScript.Run(ctx, r.client, []string{redisKey},
 		nowMs,
 		windowStartMs,
 		limit.RequestsPerWindow,
-		windowSizeMs/1000, // Convert to seconds for EXPIRE
+		windowSizeMs,
+		n,
+		rand.Text(),
 	).Result()
 
 	if err != nil {
@@ -177,10 +155,46 @@ func (r *RedisLimiter) AllowWithInfo(ctx context.Context, key string) (*Result, 
 		Allowed:    allowed,
 		Limit:      maxLimit,
 		Remaining:  remaining,
-		RetryAfter: time.Duration(retryAfterMs) * time.Millisecond,
+		RetryAfter: redisMillisecondsDuration(retryAfterMs),
 		ResetAt:    now.Add(limit.WindowSize),
 	}, nil
 }
+
+// One atomic script handles both individual requests and batches.
+var redisSlidingWindowScript = redis.NewScript(`
+		local key = KEYS[1]
+		local now = tonumber(ARGV[1])
+		local window_start = tonumber(ARGV[2])
+		local limit = tonumber(ARGV[3])
+		local window_size = tonumber(ARGV[4])
+		local n = tonumber(ARGV[5])
+		local nonce = ARGV[6]
+
+		-- Remove old entries outside the window
+		redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+
+		-- Count current entries
+		local current = redis.call('ZCARD', key)
+
+		-- Check if limit exceeded
+		if current + n > limit then
+			local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+			local retry_after = 0
+			if #oldest > 0 then
+				retry_after = tonumber(oldest[2]) + window_size - now
+				if retry_after < 0 then retry_after = 0 end
+			end
+			return {0, current, limit, retry_after}
+		end
+
+		-- Add the whole batch atomically, with distinct members across calls.
+		for i = 1, n do
+			redis.call('ZADD', key, now, nonce .. ':' .. i)
+		end
+		redis.call('PEXPIRE', key, window_size)
+
+		return {1, current + n, limit, 0}
+`)
 
 // AllowWithFixedWindow implements fixed window algorithm using Redis
 func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*Result, error) {
@@ -192,8 +206,12 @@ func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*R
 	redisKey := r.buildKey(key)
 	now := time.Now()
 
+	windowSizeMs := limit.WindowSize.Milliseconds()
+	if limit.WindowSize%time.Millisecond != 0 {
+		windowSizeMs++
+	}
 	// Use current window timestamp as key suffix
-	windowKey := fmt.Sprintf("%s:%d", redisKey, now.Unix()/int64(limit.WindowSize.Seconds()))
+	windowKey := fmt.Sprintf("%s:%d", redisKey, now.UnixMilli()/windowSizeMs)
 
 	script := redis.NewScript(`
 		local key = KEYS[1]
@@ -203,22 +221,22 @@ func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*R
 		local current = tonumber(redis.call('GET', key) or "0")
 
 		if current >= limit then
-			local ttl = redis.call('TTL', key)
+			local ttl = redis.call('PTTL', key)
 			return {0, current, limit, ttl}
 		end
 
 		local new_count = redis.call('INCR', key)
 		if new_count == 1 then
-			redis.call('EXPIRE', key, window_size)
+			redis.call('PEXPIRE', key, window_size)
 		end
 
-		local ttl = redis.call('TTL', key)
+		local ttl = redis.call('PTTL', key)
 		return {1, new_count, limit, ttl}
 	`)
 
 	result, err := script.Run(ctx, r.client, []string{windowKey},
 		limit.RequestsPerWindow,
-		int(limit.WindowSize.Seconds()),
+		windowSizeMs,
 	).Result()
 
 	if err != nil {
@@ -238,7 +256,7 @@ func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*R
 
 	var retryAfter time.Duration
 	if !allowed && ttl > 0 {
-		retryAfter = time.Duration(ttl) * time.Second
+		retryAfter = redisMillisecondsDuration(ttl)
 	}
 
 	return &Result{
@@ -246,8 +264,17 @@ func (r *RedisLimiter) AllowWithFixedWindow(ctx context.Context, key string) (*R
 		Limit:      maxLimit,
 		Remaining:  remaining,
 		RetryAfter: retryAfter,
-		ResetAt:    now.Add(time.Duration(ttl) * time.Second),
+		ResetAt:    now.Add(redisMillisecondsDuration(ttl)),
 	}, nil
+}
+
+// Rounded-up Redis milliseconds can exceed the largest Go duration by less than 1ms.
+func redisMillisecondsDuration(milliseconds int64) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
+	if milliseconds > maxDuration.Milliseconds() {
+		return maxDuration
+	}
+	return time.Duration(milliseconds) * time.Millisecond
 }
 
 // Reset resets the rate limit for the given key

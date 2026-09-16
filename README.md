@@ -25,10 +25,10 @@ A flexible, high-performance rate limiting service implemented in Go with suppor
 
 - **Thread-Safe**
   - Concurrent request handling using Go sync primitives
-  - Race condition free implementation
+  - Race detector checks in the test suite
 
 - **Comprehensive Testing**
-  - Unit tests with 80%+ code coverage
+  - Package and whole-repository coverage reported in [local verification](#local-verification)
   - Concurrent test scenarios
   - Integration tests
 
@@ -60,7 +60,7 @@ rate-limiter-project-go/
 
 ### Prerequisites
 
-- Go 1.19 or higher
+- Go 1.24.7 or higher (matching `go.mod`)
 - Redis (optional, for distributed rate limiting)
 - Docker & Docker Compose (optional, for containerized deployment)
 
@@ -456,6 +456,28 @@ The docker-compose setup includes:
 
 ## Running Tests
 
+### Local verification
+
+Verified on 16 September 2026 with Go 1.24.7, Linux amd64, against commit `543b62b38ebb5413155c5157a5c006a362e17d68` plus the local fixes in this working tree. All commands below passed with locked dependencies; the race detector reported no races in these tests.
+
+```bash
+export GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+go mod download
+go mod verify
+export GOPROXY=off
+go test -count=1 -timeout=120s ./...
+go test -race -count=1 -timeout=120s ./...
+go test -count=1 -timeout=120s -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+go test -count=1 -timeout=30s -v -run '^TestIntegration_RateLimitEnforcement$' ./test/integration
+```
+
+Statement coverage: `pkg/ratelimiter` **86.1%**, `pkg/middleware` **74.4%**, whole profile **51.2%**. The server and example executables compile but have **0%** coverage. Integration tests report no statements of their own. The HTTP demonstration logged five responses of 200, then 429 with `Retry-After: 1`.
+
+Redis checks use miniredis, not a deployed Redis cluster. This verifies the tested behavior, not production performance or complete correctness. Known source-level limitations remain: `RedisConfig.KeyPrefix` is not applied, and `Reset` uses a prefix scan that can also match sibling keys. Redis sliding-window `ResetAt` retains its existing `now + window` behavior. These limitations were inspected in source, not independently reproduced by this run.
+
+The local `.github/workflows/ci.yml` runs the same checks on pushes and pull requests. It has not yet been pushed or executed on GitHub; no remote CI success is claimed.
+
 ### Unit Tests
 
 ```bash
@@ -577,7 +599,7 @@ Used Lua scripts for atomic Redis operations, ensuring consistency in distribute
 
 ### Benchmarks
 
-Approximate performance on standard hardware (Intel i7, 16GB RAM):
+Historical approximate figures from the original README, described as Intel i7 / 16GB RAM. No supporting benchmark log is included, and these figures were **not revalidated** by the local verification above:
 
 | Algorithm | Requests/sec | Memory/10K keys |
 |-----------|-------------|-----------------|

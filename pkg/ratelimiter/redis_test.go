@@ -210,6 +210,113 @@ func TestRedisLimiter_AllowN_Invalid(t *testing.T) {
 	}
 }
 
+func TestRedisLimiter_AllowN_RejectedBatchConsumesNothing(t *testing.T) {
+	mr, limiter := setupTestRedis(t)
+	defer mr.Close()
+	defer limiter.Close()
+
+	ctx := context.Background()
+	for _, step := range []struct {
+		n       int
+		allowed bool
+	}{{6, false}, {3, true}, {3, false}, {2, true}, {1, false}} {
+		allowed, err := limiter.AllowN(ctx, "batch", step.n)
+		if err != nil || allowed != step.allowed {
+			t.Fatalf("AllowN(%d) = %v, %v; want %v", step.n, allowed, err, step.allowed)
+		}
+	}
+}
+
+func TestRedisLimiter_SubsecondWindow(t *testing.T) {
+	mr, limiter := setupTestRedis(t)
+	defer mr.Close()
+	defer limiter.Close()
+
+	const window = 500 * time.Millisecond
+	if err := limiter.SetLimit("fractional", NewLimit(1, window)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if allowed, err := limiter.Allow(ctx, "fractional"); err != nil || !allowed {
+		t.Fatalf("First request = %v, %v; want allowed", allowed, err)
+	}
+	if ttl := mr.TTL("ratelimit:fractional"); ttl != window {
+		t.Fatalf("TTL = %v; want %v", ttl, window)
+	}
+	result, err := limiter.AllowWithInfo(ctx, "fractional")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Allowed || result.RetryAfter <= 0 || result.RetryAfter > window {
+		t.Fatalf("Denied result = %+v; want positive retry <= %v", result, window)
+	}
+	mr.FastForward(window)
+	if allowed, err := limiter.Allow(ctx, "fractional"); err != nil || !allowed {
+		t.Fatalf("Request after expiry = %v, %v; want allowed", allowed, err)
+	}
+}
+
+func TestRedisLimiter_SubmillisecondWindow(t *testing.T) {
+	mr, limiter := setupTestRedis(t)
+	defer mr.Close()
+	defer limiter.Close()
+
+	if err := limiter.SetLimit("tiny", NewLimit(1, 500*time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := limiter.Allow(context.Background(), "tiny"); err != nil || !allowed {
+		t.Fatalf("First request = %v, %v; want allowed", allowed, err)
+	}
+	if ttl := mr.TTL("ratelimit:tiny"); ttl != time.Millisecond {
+		t.Fatalf("TTL = %v; want minimum Redis resolution 1ms", ttl)
+	}
+}
+
+func TestRedisLimiter_BatchesAtSameMillisecond(t *testing.T) {
+	mr, limiter := setupTestRedis(t)
+	defer mr.Close()
+	defer limiter.Close()
+
+	ctx := context.Background()
+	const now = 1000
+	const window = 500
+	for _, nonce := range []string{"batch-a", "batch-b"} {
+		if _, err := redisSlidingWindowScript.Run(ctx, limiter.client, []string{"same-time"},
+			now, now-window, 4, window, 2, nonce).Result(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := limiter.client.ZRangeWithScores(ctx, "same-time", 0, -1).Result()
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("Same-time batches stored %d entries, %v; want 4", len(entries), err)
+	}
+	for _, entry := range entries {
+		if entry.Score != now {
+			t.Fatalf("Score = %v; want fixed timestamp %d", entry.Score, now)
+		}
+	}
+	result, err := redisSlidingWindowScript.Run(ctx, limiter.client, []string{"same-time"},
+		now, now-window, 4, window, 1, "batch-c").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values := result.([]interface{}); values[0].(int64) != 0 || values[1].(int64) != 4 {
+		t.Fatalf("Request after two batches = %v; want denied with count 4", result)
+	}
+}
+
+func TestRedisMillisecondsDuration(t *testing.T) {
+	const maxDuration = time.Duration(1<<63 - 1)
+	for _, tc := range []struct {
+		milliseconds int64
+		want         time.Duration
+	}{{-1, -time.Millisecond}, {500, 500 * time.Millisecond}, {maxDuration.Milliseconds() + 1, maxDuration}} {
+		if got := redisMillisecondsDuration(tc.milliseconds); got != tc.want {
+			t.Errorf("Duration(%dms) = %v; want %v", tc.milliseconds, got, tc.want)
+		}
+	}
+}
+
 func TestRedisLimiter_AllowWithInfo(t *testing.T) {
 	mr, limiter := setupTestRedis(t)
 	defer mr.Close()
@@ -287,6 +394,31 @@ func TestRedisLimiter_AllowWithFixedWindow(t *testing.T) {
 
 	if result.Allowed {
 		t.Error("Request should be denied after limit")
+	}
+}
+
+func TestRedisLimiter_FixedWindowFractionalDuration(t *testing.T) {
+	for _, window := range []time.Duration{1500 * time.Millisecond, 500 * time.Millisecond, 500 * time.Microsecond} {
+		t.Run(window.String(), func(t *testing.T) {
+			mr, limiter := setupTestRedis(t)
+			defer mr.Close()
+			defer limiter.Close()
+			if err := limiter.SetLimit("fractional-fixed", NewLimit(1, window)); err != nil {
+				t.Fatal(err)
+			}
+			result, err := limiter.AllowWithFixedWindow(context.Background(), "fractional-fixed")
+			if err != nil || !result.Allowed || result.Remaining != 0 {
+				t.Fatalf("First fixed-window result = %+v, %v", result, err)
+			}
+			wantTTL := window
+			if window < time.Millisecond {
+				wantTTL = time.Millisecond
+			}
+			keys := mr.Keys()
+			if len(keys) != 1 || mr.TTL(keys[0]) != wantTTL {
+				t.Fatalf("Keys=%v; want one key with TTL %v", keys, wantTTL)
+			}
+		})
 	}
 }
 

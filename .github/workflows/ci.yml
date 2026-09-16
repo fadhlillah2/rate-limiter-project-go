@@ -1,0 +1,36 @@
+name: Go checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Download and verify locked dependencies
+        run: |
+          go mod download
+          go mod verify
+      - name: Test, race check, coverage and HTTP demonstration
+        env:
+          GOPROXY: 'off'
+        run: |
+          go test -count=1 -timeout=120s ./...
+          go test -race -count=1 -timeout=120s ./...
+          go test -count=1 -timeout=120s -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+          go test -count=1 -timeout=30s -v -run '^TestIntegration_RateLimitEnforcement$' ./test/integration

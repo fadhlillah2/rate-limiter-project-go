@@ -4,12 +4,14 @@ This directory contains runnable examples demonstrating how to use the rate limi
 
 ## Running the Examples
 
+Run these commands from the `examples/` directory. Each subdirectory is a separate executable package, so repository-wide tests can compile both examples.
+
 ### Basic Usage Example
 
 Shows how to use different rate limiting algorithms in Go code:
 
 ```bash
-go run basic_usage.go
+go run ./basic
 ```
 
 This example demonstrates:
@@ -24,7 +26,7 @@ This example demonstrates:
 Shows how to integrate rate limiting into an HTTP server:
 
 ```bash
-go run http_middleware.go
+go run ./http
 ```
 
 This example demonstrates:
